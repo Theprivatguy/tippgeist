@@ -1,0 +1,1101 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>So arbeitet Claude Code</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: rgba(17, 24, 42, 0.88);
+    --panel-border: rgba(140, 160, 205, 0.18);
+    --text: #e6ebf5;
+    --muted: #9aa6c0;
+    --blue: #4da3ff;
+    --orange: #ff9a3c;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #scene { position: fixed; inset: 0; }
+  #scene canvas { display: block; touch-action: none; cursor: grab; }
+  #scene canvas:active { cursor: grabbing; }
+
+  /* Beschriftungen im 3D-Raum */
+  #labels { position: fixed; inset: 0; pointer-events: none; }
+  .lbl {
+    position: absolute; left: 0; top: 0; white-space: nowrap; text-align: center;
+    padding: 6px 12px; border-radius: 10px;
+    background: rgba(12, 18, 34, 0.82); border: 1px solid var(--panel-border);
+    font-size: 15px; line-height: 1.3; transition: opacity .4s, border-color .3s;
+  }
+  .lbl b { display: block; font-weight: 650; }
+  .lbl span { display: block; font-size: 13px; color: var(--muted); }
+  .lbl.dim { opacity: .45; }
+  .lbl.small { padding: 3px 9px; font-size: 13px; }
+  .lbl.active { border-color: var(--orange); color: var(--orange); }
+  .lbl.done { border-color: var(--orange); }
+  .lbl.done span { color: var(--orange); }
+  .lbl.packet { padding: 2px 8px; font-size: 12px; font-weight: 600; background: rgba(12,18,34,.7); }
+  .lbl.packet.blue { color: var(--blue); border-color: rgba(77,163,255,.6); }
+  .lbl.packet.orange { color: var(--orange); border-color: rgba(255,154,60,.6); }
+
+  /* Bedienleiste oben */
+  #top {
+    position: fixed; top: 16px; left: 16px; right: 16px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    pointer-events: none;
+  }
+  #top > * { pointer-events: auto; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button {
+    font: inherit; color: var(--text); cursor: pointer;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 999px; transition: background .2s, border-color .2s, transform .1s;
+  }
+  button:hover { border-color: rgba(200, 215, 245, .45); }
+  button:active { transform: scale(.97); }
+  button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .mode { font-size: 18px; font-weight: 650; padding: 12px 28px; min-width: 160px; }
+  .mode[aria-pressed="true"] { background: #e6ebf5; color: #0b1020; border-color: #e6ebf5; }
+  .toggle { font-size: 15px; padding: 12px 20px; display: inline-flex; align-items: center; gap: 10px; }
+  .toggle .sw {
+    width: 34px; height: 20px; border-radius: 10px; background: #2a3450; position: relative; transition: background .2s;
+  }
+  .toggle .sw::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px;
+    border-radius: 50%; background: #9aa6c0; transition: transform .2s, background .2s;
+  }
+  .toggle[aria-pressed="true"] .sw { background: var(--blue); }
+  .toggle[aria-pressed="true"] .sw::after { transform: translateX(14px); background: #fff; }
+  .notice {
+    margin: 0; padding: 7px 16px; border-radius: 999px; font-size: 14px;
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text); text-align: center;
+  }
+  .notice strong { font-weight: 650; }
+
+  #view {
+    position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    font-size: 12px; color: var(--muted);
+  }
+  #view button { font-size: 13px; padding: 6px 12px; }
+
+  /* Unten: Erklärung und Infokasten */
+  #bottom {
+    position: fixed; left: 16px; right: 16px; bottom: 16px;
+    display: flex; gap: 16px; align-items: flex-end; justify-content: center; pointer-events: none;
+  }
+  #bottom > * { pointer-events: auto; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: var(--radius);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  #explain { flex: 1 1 auto; max-width: 620px; padding: 14px 18px 16px; }
+  #explain .meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
+  #explain h2 { margin: 4px 0 6px; font-size: 20px; font-weight: 650; }
+  #explain p { margin: 0; font-size: 16px; line-height: 1.5; color: #cfd7e8; }
+  #explain p.hint { font-size: 14px; color: var(--muted); }
+  .progress { height: 3px; background: #1f2840; border-radius: 2px; margin-top: 12px; overflow: hidden; }
+  .progress div { height: 100%; width: 0; background: var(--text); opacity: .6; }
+  #btn-next {
+    margin-top: 12px; font-size: 16px; font-weight: 650; padding: 10px 22px;
+    background: var(--blue); border-color: var(--blue); color: #06101f;
+  }
+  #btn-next[hidden] { display: none; }
+  #btn-next.pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(77,163,255,.25); } }
+
+  #info { flex: 0 0 300px; padding: 14px 18px; }
+  #info h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  #info p { margin: 0; font-size: 17px; line-height: 1.45; font-weight: 550; }
+  .legend { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--panel-border); font-size: 13px; color: var(--muted); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; vertical-align: 0; }
+  .dot.blue { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+  .dot.orange { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
+
+  #error {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px;
+    text-align: center; font-size: 18px; background: var(--bg);
+  }
+  #error[hidden] { display: none; }
+
+  @media (max-width: 760px) {
+    .mode { font-size: 16px; padding: 10px 18px; min-width: 0; }
+    .toggle { padding: 10px 14px; font-size: 14px; }
+    .notice { font-size: 12.5px; border-radius: 12px; }
+    #view { display: none; }
+    #bottom { flex-direction: column; align-items: stretch; gap: 8px; }
+    #explain { max-width: none; padding: 10px 14px 12px; }
+    #explain h2 { font-size: 17px; }
+    #explain p { font-size: 14.5px; }
+    #explain p.hint { display: none; }
+    #info { flex: 0 0 auto; padding: 10px 14px; }
+    #info p { font-size: 15px; }
+    .legend { flex-direction: row; gap: 14px; margin-top: 8px; padding-top: 8px; }
+    .lbl { font-size: 13px; padding: 4px 9px; }
+    .lbl span { font-size: 11.5px; }
+  }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="labels"></div>
+
+<header id="top">
+  <div class="row">
+    <button id="btn-local" class="mode" aria-pressed="true">Lokal</button>
+    <button id="btn-cloud" class="mode" aria-pressed="false">Cloud-Session</button>
+    <button id="btn-step" class="toggle" aria-pressed="false"><span class="sw"></span>Schritt für Schritt</button>
+  </div>
+  <p class="notice">In beiden Modi gehen Daten an Anthropic. <strong>In keinem Modus ist etwas öffentlich.</strong></p>
+</header>
+
+<div id="view">
+  <button id="btn-view">Ansicht zurücksetzen</button>
+  <span>Ziehen = drehen · Mausrad = zoomen</span>
+</div>
+
+<footer id="bottom">
+  <section id="explain" class="panel" aria-live="polite">
+    <div class="meta"><span id="step-count"></span><span id="step-mode"></span></div>
+    <h2 id="step-title"></h2>
+    <p id="step-text"></p>
+    <div class="progress"><div id="progress"></div></div>
+    <button id="btn-next" hidden>Weiter</button>
+  </section>
+  <aside id="info" class="panel">
+    <h3 id="info-head"></h3>
+    <p id="info-text"></p>
+    <div class="legend">
+      <span><i class="dot blue"></i>Blau: deine Anweisung / Code</span>
+      <span><i class="dot orange"></i>Orange: Antwort / Aktion von Claude</span>
+    </div>
+  </aside>
+</footer>
+
+<div id="error" hidden>Die 3D-Bibliothek konnte nicht geladen werden. Bitte mit Internetverbindung neu laden.</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  if (typeof THREE === 'undefined') {
+    document.getElementById('error').hidden = false;
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Grundaufbau
+  // ---------------------------------------------------------------------------
+  const BLUE = 0x4da3ff;
+  const ORANGE = 0xff9a3c;
+  const BG = 0x0b1020;
+  const GREY = new THREE.Color(0x353c4d);
+
+  const container = document.getElementById('scene');
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  container.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(BG);
+  scene.fog = new THREE.Fog(BG, 38, 75);
+
+  const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 300);
+
+  scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x0b1020, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+  sun.position.set(6, 14, 10);
+  scene.add(sun);
+
+  // Boden
+  const floor = new THREE.Mesh(
+    new THREE.CircleGeometry(90, 64),
+    new THREE.MeshStandardMaterial({ color: 0x0e1426, roughness: 1 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -0.01;
+  scene.add(floor);
+  const grid = new THREE.GridHelper(120, 60, 0x1a2340, 0x141c33);
+  grid.position.y = 0;
+  scene.add(grid);
+
+  // Leuchtender Punkt als Textur für Glüheffekte
+  const glowTex = (function () {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(c);
+  })();
+
+  function glowSprite(color, size, opacity) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTex, color: color, transparent: true, opacity: opacity == null ? 1 : opacity,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    s.scale.setScalar(size);
+    return s;
+  }
+
+  function box(w, h, d, mat) {
+    return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  }
+
+  function std(color, extra) {
+    return new THREE.MeshStandardMaterial(Object.assign({ color: color, roughness: 0.6, metalness: 0.15 }, extra || {}));
+  }
+
+  function platform(radius, y) {
+    const g = new THREE.Group();
+    const top = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.04, 0.3, 64), std(0x161e33, { roughness: 0.9 }));
+    top.position.y = y + 0.15;
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.03, 8, 96), new THREE.MeshBasicMaterial({ color: 0x33426a }));
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = y + 0.3;
+    g.add(top, rim);
+    return g;
+  }
+
+  function makeFolder() {
+    const g = new THREE.Group();
+    const back = std(0x8b9bbd, { emissive: ORANGE, emissiveIntensity: 0 });
+    const front = std(0xa9b7d6, { emissive: ORANGE, emissiveIntensity: 0 });
+    const paper = std(0xeef2fa, { roughness: 0.9 });
+    const b = box(1.0, 0.72, 0.08, back); b.position.y = 0.36;
+    const t = box(0.42, 0.12, 0.08, back); t.position.set(-0.29, 0.78, 0);
+    const p = box(0.86, 0.62, 0.02, paper); p.position.set(0, 0.43, 0.05);
+    const f = box(1.0, 0.58, 0.05, front); f.position.set(0, 0.29, 0.1); f.rotation.x = -0.14;
+    g.add(b, t, p, f);
+    return { group: g, mats: [back, front] };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ort 1: Dein PC
+  // ---------------------------------------------------------------------------
+  const PC_POS = new THREE.Vector3(-8.5, 0, 1);
+  const pc = new THREE.Group();
+  pc.position.copy(PC_POS);
+  pc.rotation.y = 0.35;
+  scene.add(pc);
+  pc.add(platform(3.4, 0));
+
+  const caseMat = std(0x2a3350, { metalness: 0.3 });
+  const bezel = box(3.3, 2.1, 0.16, caseMat); bezel.position.set(0, 2.45, 0);
+  const stand = box(0.22, 1.0, 0.2, caseMat); stand.position.set(0, 0.9, -0.05);
+  const foot = box(1.2, 0.08, 0.7, caseMat); foot.position.set(0, 0.34, 0);
+  pc.add(bezel, stand, foot);
+
+  const screenCanvas = document.createElement('canvas');
+  screenCanvas.width = 600; screenCanvas.height = 360;
+  const screenTex = new THREE.CanvasTexture(screenCanvas);
+  screenTex.anisotropy = 4;
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 1.86), new THREE.MeshBasicMaterial({ map: screenTex }));
+  screen.position.set(0, 2.45, 0.085);
+  pc.add(screen);
+
+  const powerLedMat = new THREE.MeshBasicMaterial({ color: BLUE });
+  const powerLed = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), powerLedMat);
+  powerLed.position.set(1.45, 1.47, 0.09);
+  pc.add(powerLed);
+
+  const kbMat = std(0x232b44);
+  const kb = box(2.8, 0.1, 0.9, kbMat); kb.position.set(0, 0.36, 1.35);
+  pc.add(kb);
+  const keyMat = std(0x3a4566, { roughness: 0.8 });
+  const keyGeo = new THREE.BoxGeometry(0.17, 0.06, 0.17);
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 12; c++) {
+      const k = new THREE.Mesh(keyGeo, keyMat);
+      k.position.set(-1.21 + c * 0.22, 0.43, 1.02 + r * 0.22);
+      pc.add(k);
+    }
+  }
+
+  const pcFolder = makeFolder();
+  pcFolder.group.position.set(2.45, 0.3, 0.9);
+  pcFolder.group.rotation.y = -0.5;
+  pc.add(pcFolder.group);
+
+  function drawScreen(kind) {
+    const g = screenCanvas.getContext('2d');
+    const W = screenCanvas.width, H = screenCanvas.height;
+    g.textBaseline = 'middle';
+    if (kind === 'off') {
+      g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+      g.fillStyle = '#56607a'; g.font = '600 64px system-ui, sans-serif'; g.textAlign = 'center';
+      g.fillText('PC aus', W / 2, H / 2);
+      screenTex.needsUpdate = true;
+      return;
+    }
+    g.fillStyle = '#0e1628'; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#1a2440'; g.fillRect(0, 0, W, 52);
+    g.textAlign = 'left';
+    g.fillStyle = '#9aa6c0'; g.font = '600 30px system-ui, sans-serif';
+    g.fillText(kind === 'cloud' ? 'Browser: Claude (Cloud)' : 'Claude Code auf deinem PC', 24, 27);
+    g.font = '600 34px ui-monospace, Menlo, Consolas, monospace';
+    g.fillStyle = '#4da3ff';
+    g.fillText('> Baue ein Kontaktformular', 24, 115);
+    if (kind === 'local-busy') {
+      g.fillStyle = '#ff9a3c'; g.fillText('Ändere kontakt.html ...', 24, 180);
+    } else if (kind === 'cloud') {
+      g.fillStyle = '#9aa6c0'; g.fillText('Läuft in der Cloud ...', 24, 180);
+    }
+    g.fillStyle = '#e6ebf5'; g.fillRect(24, 230, 18, 36);
+    screenTex.needsUpdate = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ort 2: Anthropic KI-Modell (oben in der Mitte)
+  // ---------------------------------------------------------------------------
+  const MODEL_POS = new THREE.Vector3(0, 5.5, -5);
+  const model = new THREE.Group();
+  model.position.copy(MODEL_POS);
+  scene.add(model);
+  model.add(platform(2.6, 0));
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, MODEL_POS.y, 12), std(0x1c2540));
+  pillar.position.y = -MODEL_POS.y / 2;
+  model.add(pillar);
+
+  const rackMat = std(0x1d2640, { metalness: 0.4 });
+  const rackLo = box(2.4, 1.3, 1.6, rackMat); rackLo.position.y = 0.3 + 0.65;
+  const rackHi = box(2.4, 1.3, 1.6, rackMat); rackHi.position.y = 0.3 + 3.25;
+  const sideL = box(0.2, 1.3, 1.6, rackMat); sideL.position.set(-1.1, 0.3 + 1.95, 0);
+  const sideR = box(0.2, 1.3, 1.6, rackMat); sideR.position.set(1.1, 0.3 + 1.95, 0);
+  const backP = box(2.0, 1.3, 0.1, rackMat); backP.position.set(0, 0.3 + 1.95, -0.75);
+  model.add(rackLo, rackHi, sideL, sideR, backP);
+  const slotMat = new THREE.MeshBasicMaterial({ color: 0x3a4a78 });
+  [0.3 + 0.35, 0.3 + 0.65, 0.3 + 0.95, 0.3 + 2.95, 0.3 + 3.25, 0.3 + 3.55].forEach(function (y) {
+    const s = box(1.7, 0.05, 0.02, slotMat); s.position.set(-0.1, y, 0.81);
+    const led = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), new THREE.MeshBasicMaterial({ color: ORANGE }));
+    led.position.set(0.95, y, 0.82);
+    model.add(s, led);
+  });
+
+  const CORE_Y = 0.3 + 1.95;
+  const coreMat = new THREE.MeshStandardMaterial({ color: 0xffd6a8, emissive: 0xffb66b, emissiveIntensity: 0.8, roughness: 0.3 });
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.45, 1), coreMat);
+  core.position.y = CORE_Y;
+  model.add(core);
+  const coreGlow = glowSprite(0xffb66b, 3.2, 0.55);
+  coreGlow.position.y = CORE_Y;
+  model.add(coreGlow);
+  const coreRing = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.025, 8, 64), new THREE.MeshBasicMaterial({ color: 0xffc68a, transparent: true, opacity: 0.5 }));
+  coreRing.position.y = CORE_Y;
+  model.add(coreRing);
+  const coreLight = new THREE.PointLight(0xffb66b, 1.0, 9);
+  coreLight.position.set(0, CORE_Y, 1.2);
+  model.add(coreLight);
+
+  // ---------------------------------------------------------------------------
+  // Ort 3: Anthropic Cloud-Rechner (rechts, unter Glaskuppel)
+  // ---------------------------------------------------------------------------
+  const CLOUD_POS = new THREE.Vector3(8.5, 0, 1);
+  const cloud = new THREE.Group();
+  cloud.position.copy(CLOUD_POS);
+  cloud.rotation.y = -0.35;
+  scene.add(cloud);
+  cloud.add(platform(3.4, 0));
+
+  const srvMat = std(0x2a3350, { metalness: 0.35 });
+  const srvLedMat = new THREE.MeshBasicMaterial({ color: BLUE });
+  [-0.7, 0.55].forEach(function (x, i) {
+    const s = box(1.0, 1.9 - i * 0.4, 1.0, srvMat);
+    s.position.set(x, 0.3 + (1.9 - i * 0.4) / 2, -0.4);
+    cloud.add(s);
+    for (let k = 0; k < 4 - i; k++) {
+      const l = box(0.6, 0.04, 0.02, srvLedMat);
+      l.position.set(x, 0.55 + k * 0.38, 0.11);
+      cloud.add(l);
+    }
+  });
+  const cloudFolder = makeFolder();
+  cloudFolder.group.position.set(0.1, 0.3, 1.3);
+  cloud.add(cloudFolder.group);
+
+  const domeMat = new THREE.MeshStandardMaterial({
+    color: 0x9cc2ff, transparent: true, opacity: 0.13, roughness: 0.1, metalness: 0.1,
+    side: THREE.DoubleSide, depthWrite: false
+  });
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(3.1, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2), domeMat);
+  dome.position.y = 0.3;
+  cloud.add(dome);
+  const domeLines = new THREE.LineSegments(
+    new THREE.WireframeGeometry(new THREE.SphereGeometry(3.12, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2)),
+    new THREE.LineBasicMaterial({ color: 0x9cc2ff, transparent: true, opacity: 0.12 })
+  );
+  domeLines.position.y = 0.3;
+  cloud.add(domeLines);
+
+  const lockMat = std(0xe6ebf5, { emissive: 0xe6ebf5, emissiveIntensity: 0.25, metalness: 0.5 });
+  const lock = new THREE.Group();
+  const lockBody = box(0.7, 0.55, 0.22, lockMat);
+  const shackle = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.06, 10, 24, Math.PI), lockMat);
+  shackle.position.y = 0.27;
+  const keyhole = new THREE.Mesh(new THREE.CircleGeometry(0.07, 16), new THREE.MeshBasicMaterial({ color: 0x1a2236 }));
+  keyhole.position.set(0, 0.02, 0.112);
+  lock.add(lockBody, shackle, keyhole);
+  lock.position.set(0, 3.75, 0);
+  cloud.add(lock);
+
+  // Materialien, die im Modus "Lokal" ausgegraut werden
+  const cloudMats = [];
+  cloud.traverse(function (o) {
+    if (!o.material || cloudMats.some(function (e) { return e.m === o.material; })) return;
+    const m = o.material;
+    m.transparent = true;
+    cloudMats.push({
+      m: m, color: m.color.clone(), opacity: m.opacity,
+      emissive: m.emissive ? m.emissive.clone() : null, ei: m.emissiveIntensity || 0
+    });
+  });
+  function applyCloudDim(d) {
+    cloudMats.forEach(function (e) {
+      e.m.color.copy(e.color).lerp(GREY, 0.7 * d);
+      e.m.opacity = e.opacity * (1 - 0.5 * d);
+      if (e.emissive && e.m !== cloudFolder.mats[0] && e.m !== cloudFolder.mats[1]) e.m.emissiveIntensity = e.ei * (1 - 0.9 * d);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ort 4: GitHub (unten rechts, Lager)
+  // ---------------------------------------------------------------------------
+  const GH_POS = new THREE.Vector3(13, 0, 7.5);
+  const gh = new THREE.Group();
+  gh.position.copy(GH_POS);
+  gh.rotation.y = -0.6;
+  scene.add(gh);
+  gh.add(platform(2.3, 0));
+  const whMat = std(0x2c3654);
+  const wh = box(2.0, 1.2, 1.6, whMat); wh.position.y = 0.3 + 0.6;
+  const roofR = 1.25;
+  const roof = new THREE.Mesh(new THREE.CylinderGeometry(roofR, roofR, 1.75, 3), std(0x3b4770));
+  roof.rotation.x = -Math.PI / 2;
+  roof.position.y = 0.3 + 1.2 + roofR / 2 - 0.02;
+  const doorMat = std(0x121a2e, { emissive: ORANGE, emissiveIntensity: 0 });
+  const door = box(0.8, 0.8, 0.04, doorMat); door.position.set(0, 0.3 + 0.4, 0.81);
+  const crateMat = std(0x55638a);
+  const c1 = box(0.45, 0.45, 0.45, crateMat); c1.position.set(1.35, 0.3 + 0.225, 0.6);
+  const c2 = box(0.35, 0.35, 0.35, crateMat); c2.position.set(1.35, 0.3 + 0.625, 0.6); c2.rotation.y = 0.4;
+  gh.add(wh, roof, door, c1, c2);
+
+  // ---------------------------------------------------------------------------
+  // Leitungen
+  // ---------------------------------------------------------------------------
+  function worldPoint(group, x, y, z) {
+    group.updateMatrixWorld(true);
+    return group.localToWorld(new THREE.Vector3(x, y, z));
+  }
+  const A = {
+    pcTop: worldPoint(pc, 0, 3.6, 0),
+    modelL: MODEL_POS.clone().add(new THREE.Vector3(-1.25, CORE_Y, 0.2)),
+    modelR: MODEL_POS.clone().add(new THREE.Vector3(1.25, CORE_Y, 0.2)),
+    cloudTop: worldPoint(cloud, 0, 4.25, 0),
+    cloudSide: worldPoint(cloud, 1.2, 1.2, 1.6),
+    ghFront: worldPoint(gh, 0, 1.4, 0.2)
+  };
+
+  function curve(a, b, lift, pull) {
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    mid.y += lift;
+    if (pull) mid.add(pull);
+    return new THREE.QuadraticBezierCurve3(a, mid, b);
+  }
+
+  const paths = {};
+  function addPath(key, c) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x33415f, transparent: true, opacity: 0.8 });
+    const mesh = new THREE.Mesh(new THREE.TubeGeometry(c, 80, 0.045, 8, false), mat);
+    scene.add(mesh);
+    paths[key] = { curve: c, mat: mat, heat: 0, heatColor: new THREE.Color(BLUE), relevance: 1, shown: 1 };
+  }
+  addPath('pcModel', curve(A.pcTop, A.modelL, 2.5));
+  addPath('cloudModel', curve(A.cloudTop, A.modelR, 2.5));
+  addPath('ghCloud', curve(A.ghFront, A.cloudSide, 1.2));
+  addPath('pcCloud', curve(A.pcTop, A.cloudTop, 1.0, new THREE.Vector3(0, 0, 7)));
+
+  const BASE_LINE = new THREE.Color(0x33415f);
+  function updatePaths(dt) {
+    Object.keys(paths).forEach(function (k) {
+      const p = paths[k];
+      p.heat = Math.max(0, p.heat - dt * 0.8);
+      p.shown += (p.relevance - p.shown) * Math.min(1, dt * 4);
+      p.mat.color.copy(BASE_LINE).lerp(p.heatColor, Math.min(1, p.heat) * 0.85);
+      p.mat.opacity = (0.15 + 0.7 * p.shown) + Math.min(1, p.heat) * 0.15;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // HTML-Beschriftungen, die 3D-Punkten folgen
+  // ---------------------------------------------------------------------------
+  const labelLayer = document.getElementById('labels');
+  const labels = [];
+  function addLabel(getPos, html, cls) {
+    const el = document.createElement('div');
+    el.className = 'lbl' + (cls ? ' ' + cls : '');
+    el.innerHTML = html;
+    labelLayer.appendChild(el);
+    const l = { el: el, getPos: getPos, visible: true };
+    labels.push(l);
+    return l;
+  }
+  function removeLabel(l) {
+    labelLayer.removeChild(l.el);
+    labels.splice(labels.indexOf(l), 1);
+  }
+  const tmpV = new THREE.Vector3();
+  function updateLabels() {
+    const w = window.innerWidth, h = window.innerHeight;
+    labels.forEach(function (l) {
+      tmpV.copy(l.getPos()).project(camera);
+      const hidden = !l.visible || tmpV.z > 1;
+      l.el.style.display = hidden ? 'none' : '';
+      if (hidden) return;
+      const x = (tmpV.x * 0.5 + 0.5) * w, y = (-tmpV.y * 0.5 + 0.5) * h;
+      l.el.style.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0) translate(-50%,-100%)';
+    });
+  }
+  function fixed(v) { return function () { return v; }; }
+
+  const L = {
+    pc: addLabel(fixed(worldPoint(pc, 0, 4.25, 0)), ''),
+    pcFolder: addLabel(fixed(worldPoint(pc, 2.45, 1.55, 0.9)), '', 'small'),
+    model: addLabel(fixed(MODEL_POS.clone().add(new THREE.Vector3(0, 4.55, 0))), '<b>Anthropic: KI-Modell</b><span>Hier denkt Claude</span>'),
+    cloud: addLabel(fixed(worldPoint(cloud, 0, 4.9, 0)), ''),
+    cloudFolder: addLabel(fixed(worldPoint(cloud, 0.1, 1.55, 1.3)), '', 'small'),
+    gh: addLabel(fixed(worldPoint(gh, 0, 3.1, 0)), '')
+  };
+
+  function setLabel(l, html, cls) {
+    if (l.html !== html) { l.el.innerHTML = html; l.html = html; }
+    ['dim', 'active', 'done'].forEach(function (c) { l.el.classList.toggle(c, cls === c); });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Datenpakete und Effekte
+  // ---------------------------------------------------------------------------
+  const effects = [];
+  const sphereGeo = new THREE.SphereGeometry(0.26, 20, 20);
+
+  function spawnPacket(pathKey, reverse, color, text, dur) {
+    const path = paths[pathKey];
+    const grp = new THREE.Group();
+    const ball = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    const halo = glowSprite(color, 2.0, 0.95);
+    grp.add(ball, halo);
+    const trail = [];
+    for (let i = 0; i < 7; i++) {
+      const t = glowSprite(color, 0.8 - i * 0.08, 0.5 - i * 0.06);
+      scene.add(t);
+      trail.push(t);
+    }
+    scene.add(grp);
+    const colorName = color === BLUE ? 'blue' : 'orange';
+    const lbl = addLabel(function () { return grp.position.clone().add(new THREE.Vector3(0, 0.7, 0)); }, text, 'packet ' + colorName);
+    const history = [];
+    let t = 0;
+    path.heatColor.setHex(color);
+    effects.push({
+      update: function (dt) {
+        t += dt;
+        const p = Math.min(1, t / dur);
+        const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        path.curve.getPoint(reverse ? 1 - e : e, grp.position);
+        path.heat = 1.4;
+        history.unshift(grp.position.clone());
+        if (history.length > 30) history.pop();
+        trail.forEach(function (s, i) {
+          const h = history[Math.min(history.length - 1, (i + 1) * 3)];
+          s.position.copy(h);
+        });
+        if (p >= 1) {
+          burst(grp.position.clone(), color);
+          scene.remove(grp);
+          trail.forEach(function (s) { scene.remove(s); });
+          removeLabel(lbl);
+          return false;
+        }
+        return true;
+      },
+      kill: function () {
+        scene.remove(grp);
+        trail.forEach(function (s) { scene.remove(s); });
+        removeLabel(lbl);
+      }
+    });
+  }
+
+  function burst(pos, color) {
+    const s = glowSprite(color, 0.5, 1);
+    s.position.copy(pos);
+    scene.add(s);
+    let t = 0;
+    effects.push({
+      update: function (dt) {
+        t += dt;
+        const p = t / 0.7;
+        s.scale.setScalar(0.5 + p * 3.5);
+        s.material.opacity = Math.max(0, 1 - p);
+        if (p >= 1) { scene.remove(s); return false; }
+        return true;
+      },
+      kill: function () { scene.remove(s); }
+    });
+  }
+
+  function tween(dur, fn, done) {
+    let t = 0;
+    effects.push({
+      update: function (dt) {
+        t += dt;
+        const p = Math.min(1, t / dur);
+        fn(p, t);
+        if (p >= 1) { if (done) done(); return false; }
+        return true;
+      },
+      kill: function () {}
+    });
+  }
+
+  function clearEffects() {
+    effects.splice(0).forEach(function (e) { e.kill(); });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Zustand der Szene
+  // ---------------------------------------------------------------------------
+  const W = {
+    mode: 'local',
+    thinking: 0,          // > 0 solange Claude denkt (Sekunden)
+    cloudDim: 1, cloudDimTarget: 1,
+    pcOff: false,
+    ghDone: false,
+    pcFolderBusy: false,
+    cloudFolderBusy: false,
+    cloudFolderScale: 0, cloudFolderTarget: 0
+  };
+
+  function refreshLabels() {
+    const local = W.mode === 'local';
+    setLabel(L.pc, W.pcOff
+      ? '<b>Dein PC</b><span>PC aus</span>'
+      : '<b>Dein PC</b><span>' + (local ? 'Hier handelt Claude' : 'Gibt nur den Auftrag') + '</span>',
+      W.pcOff ? 'dim' : '');
+    setLabel(L.pcFolder, W.pcFolderBusy ? 'Datei wird geändert' : 'Dein Projekt',
+      W.pcFolderBusy ? 'active' : (local ? '' : 'dim'));
+    setLabel(L.cloud, '<b>Anthropic: Cloud-Rechner</b><span>🔒 Privat, nur dein Account</span>' +
+      (local ? '<span>im Modus „Lokal“ nicht genutzt</span>' : ''), local ? 'dim' : '');
+    setLabel(L.cloudFolder, W.cloudFolderBusy ? 'Datei wird geändert' : 'Projekt-Kopie',
+      W.cloudFolderBusy ? 'active' : '');
+    L.cloudFolder.visible = !local && W.cloudFolderTarget > 0;
+    setLabel(L.gh, '<b>GitHub</b><span>' + (W.ghDone ? 'Ergebnis ist angekommen' : 'Lager für dein Projekt') + '</span>',
+      W.ghDone ? 'done' : (local ? 'dim' : ''));
+  }
+
+  function resetScene() {
+    clearEffects();
+    const local = W.mode === 'local';
+    W.thinking = 0;
+    W.cloudDimTarget = local ? 1 : 0;
+    W.pcOff = false;
+    W.ghDone = false;
+    W.pcFolderBusy = false;
+    W.cloudFolderBusy = false;
+    W.cloudFolderTarget = 0;
+    W.cloudFolderScale = 0;
+    pcFolder.mats.concat(cloudFolder.mats).forEach(function (m) { m.emissiveIntensity = 0; });
+    doorMat.emissiveIntensity = 0;
+    powerLedMat.color.setHex(BLUE);
+    drawScreen(local ? 'local' : 'cloud');
+    paths.pcModel.relevance = local ? 1 : 0.15;
+    paths.cloudModel.relevance = local ? 0.1 : 1;
+    paths.ghCloud.relevance = local ? 0.1 : 1;
+    paths.pcCloud.relevance = local ? 0.1 : 1;
+    Object.keys(paths).forEach(function (k) { paths[k].heat = 0; });
+    refreshLabels();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bausteine für die Schritte
+  // ---------------------------------------------------------------------------
+  function packet(path, reverse, color, text, dur) {
+    return function () { spawnPacket(path, reverse, color, text, dur); };
+  }
+  function think(dur) {
+    return function () { W.thinking = Math.max(W.thinking, dur); };
+  }
+  function blink(which, dur) {
+    return function () {
+      const f = which === 'pc' ? pcFolder : cloudFolder;
+      const key = which === 'pc' ? 'pcFolderBusy' : 'cloudFolderBusy';
+      W[key] = true;
+      if (which === 'pc') drawScreen('local-busy');
+      refreshLabels();
+      tween(dur, function (p, t) {
+        const v = p < 1 ? 0.55 + 0.45 * Math.sin(t * 11) : 0;
+        f.mats.forEach(function (m) { m.emissiveIntensity = Math.max(0, v); });
+      }, function () {
+        W[key] = false;
+        if (which === 'pc' && !W.pcOff) drawScreen('local');
+        refreshLabels();
+      });
+    };
+  }
+  function pcOff() {
+    W.pcOff = true;
+    drawScreen('off');
+    powerLedMat.color.setHex(0x1a2236);
+    refreshLabels();
+  }
+  function showCloudFolder() {
+    W.cloudFolderTarget = 1;
+    refreshLabels();
+  }
+  function ghArrive() {
+    W.ghDone = true;
+    refreshLabels();
+    tween(1.6, function (p) { doorMat.emissiveIntensity = 0.9 * (1 - p) + 0.35 * p; });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ablauf je Modus
+  // ---------------------------------------------------------------------------
+  const STEPS = {
+    local: [
+      {
+        title: 'Du gibst eine Anweisung',
+        text: 'Du tippst auf deinem PC, was Claude tun soll. Die Anweisung geht mit den nötigen Teilen deines Projekts an das KI-Modell bei Anthropic.',
+        dur: 2.9, at: [[0, packet('pcModel', false, BLUE, 'Anweisung', 2.6)]]
+      },
+      {
+        title: 'Claude denkt nach',
+        text: 'Das KI-Modell im Rechenzentrum von Anthropic überlegt, was zu tun ist. Dein PC rechnet dabei nicht mit.',
+        dur: 2.4, at: [[0, think(2.3)]]
+      },
+      {
+        title: 'Claude antwortet mit einer Aktion',
+        text: 'Zurück kommt ein konkreter Arbeitsschritt, zum Beispiel: „Ändere diese Zeile in dieser Datei.“',
+        dur: 2.9, at: [[0, packet('pcModel', true, ORANGE, 'Aktion', 2.6)]]
+      },
+      {
+        title: 'Dein PC führt die Aktion aus',
+        text: 'Das Programm Claude Code ändert die Datei direkt in deinem Projektordner auf deinem PC.',
+        dur: 2.6, at: [[0, blink('pc', 2.4)]]
+      },
+      {
+        title: 'Rückmeldung und nächste Runde',
+        text: 'Dein PC meldet das Ergebnis zurück, und das Hin und Her wiederholt sich, bis die Aufgabe erledigt ist. Dafür muss dein PC die ganze Zeit an bleiben.',
+        dur: 2.9, at: [[0, packet('pcModel', false, BLUE, 'Ergebnis', 2.6)]]
+      }
+    ],
+    cloud: [
+      {
+        title: 'Du gibst den Auftrag',
+        text: 'Du beschreibst die Aufgabe im Browser oder in der App. Der Auftrag geht an einen eigenen Rechner, den Anthropic nur für dich startet.',
+        dur: 3.2, at: [[0, packet('pcCloud', false, BLUE, 'Auftrag', 2.9)]]
+      },
+      {
+        title: 'Dein Projekt wird kopiert',
+        text: 'Der Cloud-Rechner holt sich eine Kopie deines Projekts aus deinem GitHub-Lager. Nur dein Account hat Zugriff auf diesen Rechner.',
+        dur: 3.0, at: [[0, packet('ghCloud', false, BLUE, 'Projekt wird kopiert', 2.6)], [2.6, showCloudFolder]]
+      },
+      {
+        title: 'Claude denkt nach',
+        text: 'Der Cloud-Rechner schickt die Aufgabe an das KI-Modell. Gedacht wird an derselben Stelle wie im Modus „Lokal“.',
+        dur: 4.2, at: [[0, packet('cloudModel', false, BLUE, 'Anweisung', 2.4)], [2.4, think(1.7)]]
+      },
+      {
+        title: 'Claude handelt im Cloud-Rechner',
+        text: 'Die Aktion kommt zurück, und der Cloud-Rechner ändert die Dateien in seiner Projekt-Kopie. Dein PC ist daran nicht beteiligt.',
+        dur: 4.8, at: [[0, packet('cloudModel', true, ORANGE, 'Aktion', 2.4)], [2.4, blink('cloud', 2.2)]]
+      },
+      {
+        title: 'Dein PC kann aus',
+        text: 'Du kannst deinen PC jetzt ausschalten. Claude arbeitet auf Anthropics Rechner einfach weiter, Runde für Runde.',
+        dur: 7.4, at: [
+          [0.3, pcOff],
+          [0.6, packet('cloudModel', false, BLUE, 'Ergebnis', 2.2)],
+          [2.8, think(1.2)],
+          [4.0, packet('cloudModel', true, ORANGE, 'Aktion', 2.2)],
+          [6.2, blink('cloud', 1.1)]
+        ]
+      },
+      {
+        title: 'Fertiges Ergebnis',
+        text: 'Ist die Aufgabe erledigt, landet das fertige Ergebnis in deinem GitHub-Lager. Dort prüfst du es, wann du willst, auch am nächsten Tag.',
+        dur: 3.4, at: [[0, packet('ghCloud', true, ORANGE, 'Fertiges Ergebnis', 3.0)], [3.0, ghArrive]]
+      }
+    ]
+  };
+
+  const INFO = {
+    local: { head: 'Modus: Lokal', text: 'Claude denkt bei Anthropic, handelt auf deinem PC. PC muss an bleiben.' },
+    cloud: { head: 'Modus: Cloud-Session', text: 'Claude denkt bei Anthropic, handelt auf Anthropics Rechner. PC kann aus.' }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Ablaufsteuerung
+  // ---------------------------------------------------------------------------
+  const R = { idx: 0, t: 0, fired: 0, state: 'running', stepMode: false };
+  const LOOP_GAP = 2.5;
+
+  const el = {
+    local: document.getElementById('btn-local'),
+    cloud: document.getElementById('btn-cloud'),
+    step: document.getElementById('btn-step'),
+    next: document.getElementById('btn-next'),
+    count: document.getElementById('step-count'),
+    modeTag: document.getElementById('step-mode'),
+    title: document.getElementById('step-title'),
+    text: document.getElementById('step-text'),
+    progress: document.getElementById('progress'),
+    infoHead: document.getElementById('info-head'),
+    infoText: document.getElementById('info-text')
+  };
+
+  function steps() { return STEPS[W.mode]; }
+
+  function renderExplain() {
+    const list = steps();
+    const s = list[R.idx];
+    el.count.textContent = 'Schritt ' + (R.idx + 1) + ' von ' + list.length;
+    el.modeTag.textContent = W.mode === 'local' ? 'Lokal' : 'Cloud-Session';
+    el.title.textContent = s.title;
+    if (R.stepMode) {
+      el.text.textContent = s.text;
+      el.text.className = '';
+    } else {
+      el.text.textContent = 'Tipp: Mit „Schritt für Schritt“ siehst du zu jedem Schritt eine kurze Erklärung.';
+      el.text.className = 'hint';
+    }
+    const waiting = R.state === 'waiting';
+    el.next.hidden = !R.stepMode;
+    el.next.disabled = !waiting;
+    el.next.classList.toggle('pulse', waiting);
+    el.next.textContent = waiting && R.idx === list.length - 1 ? 'Nochmal von vorn' : 'Weiter';
+  }
+
+  function startStep(i) {
+    R.idx = i; R.t = 0; R.fired = 0; R.state = 'running';
+    renderExplain();
+  }
+
+  function restart() {
+    resetScene();
+    startStep(0);
+  }
+
+  function advance() {
+    if (R.idx + 1 < steps().length) startStep(R.idx + 1);
+    else if (R.stepMode) restart();
+    else { R.state = 'gap'; R.t = 0; }
+  }
+
+  function tickRunner(dt) {
+    const s = steps()[R.idx];
+    if (R.state === 'running') {
+      R.t += dt;
+      while (R.fired < s.at.length && s.at[R.fired][0] <= R.t) {
+        s.at[R.fired][1]();
+        R.fired++;
+      }
+      if (R.t >= s.dur) {
+        if (R.stepMode) { R.state = 'waiting'; renderExplain(); }
+        else advance();
+      }
+    } else if (R.state === 'gap') {
+      R.t += dt;
+      if (R.t >= LOOP_GAP) restart();
+    }
+    const p = R.state === 'running' ? Math.min(1, R.t / s.dur) : 1;
+    el.progress.style.width = (p * 100).toFixed(1) + '%';
+  }
+
+  function setMode(mode) {
+    W.mode = mode;
+    el.local.setAttribute('aria-pressed', String(mode === 'local'));
+    el.cloud.setAttribute('aria-pressed', String(mode === 'cloud'));
+    el.infoHead.textContent = INFO[mode].head;
+    el.infoText.textContent = INFO[mode].text;
+    restart();
+  }
+
+  function setStepMode(on) {
+    R.stepMode = on;
+    el.step.setAttribute('aria-pressed', String(on));
+    if (!on && R.state === 'waiting') advance();
+    else renderExplain();
+  }
+
+  el.local.addEventListener('click', function () { setMode('local'); });
+  el.cloud.addEventListener('click', function () { setMode('cloud'); });
+  el.step.addEventListener('click', function () { setStepMode(!R.stepMode); });
+  el.next.addEventListener('click', function () { if (R.state === 'waiting') advance(); });
+  window.addEventListener('keydown', function (e) {
+    if (e.target && e.target.tagName === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return;
+    if ((e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowRight') && R.stepMode && R.state === 'waiting') {
+      e.preventDefault();
+      advance();
+    } else if (e.key === '1') setMode('local');
+    else if (e.key === '2') setMode('cloud');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Kamera: drehen und zoomen mit Maus oder Fingern
+  // ---------------------------------------------------------------------------
+  const TARGET = new THREE.Vector3(2, 3.6, 1.5);
+  const cam = { theta: 0, phi: 1.12, radius: 30, tTheta: 0, tPhi: 1.12, tRadius: 30, fit: 30, touched: false };
+
+  // Szene im freien Bereich zwischen oberer Leiste und unteren Kästen zentrieren
+  function fitRadius() {
+    const w = window.innerWidth, h = window.innerHeight;
+    const topH = document.getElementById('top').getBoundingClientRect().bottom + 12;
+    const botH = h - document.getElementById('bottom').getBoundingClientRect().top + 12;
+    const band = Math.max(160, h - topH - botH);
+    camera.setViewOffset(w, h, 0, (botH - topH) / 2, w, h);
+    const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const tanH = tanV * (w / h);
+    const halfWidth = w < h ? 13 : 15.5;
+    return Math.max(9.4 / (tanV * band / h), halfWidth / tanH);
+  }
+
+  function resetView() {
+    cam.fit = fitRadius();
+    cam.tTheta = 0; cam.tPhi = 1.12; cam.tRadius = cam.fit;
+    cam.touched = false;
+  }
+
+  const pointers = new Map();
+  let pinchDist = 0;
+  const canvas = renderer.domElement;
+  canvas.addEventListener('pointerdown', function (e) {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      const pts = Array.from(pointers.values());
+      pinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    }
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    const prev = pointers.get(e.pointerId);
+    if (!prev) return;
+    const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    cam.touched = true;
+    if (pointers.size === 1) {
+      cam.tTheta -= dx * 0.006;
+      cam.tPhi = THREE.MathUtils.clamp(cam.tPhi - dy * 0.005, 0.3, 1.5);
+    } else if (pointers.size === 2) {
+      const pts = Array.from(pointers.values());
+      const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (pinchDist > 0) zoomBy(pinchDist / d);
+      pinchDist = d;
+    }
+  });
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    pinchDist = 0;
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    cam.touched = true;
+    zoomBy(Math.exp(e.deltaY * 0.0012));
+  }, { passive: false });
+  function zoomBy(f) {
+    cam.tRadius = THREE.MathUtils.clamp(cam.tRadius * f, 10, cam.fit * 1.8);
+  }
+  document.getElementById('btn-view').addEventListener('click', resetView);
+
+  function updateCamera(dt) {
+    const k = Math.min(1, dt * 7);
+    cam.theta += (cam.tTheta - cam.theta) * k;
+    cam.phi += (cam.tPhi - cam.phi) * k;
+    cam.radius += (cam.tRadius - cam.radius) * k;
+    const sp = Math.sin(cam.phi);
+    camera.position.set(
+      TARGET.x + cam.radius * sp * Math.sin(cam.theta),
+      TARGET.y + cam.radius * Math.cos(cam.phi),
+      TARGET.z + cam.radius * sp * Math.cos(cam.theta)
+    );
+    camera.lookAt(TARGET);
+  }
+
+  function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    cam.fit = fitRadius();
+    if (!cam.touched) cam.tRadius = cam.fit;
+    else cam.tRadius = Math.min(cam.tRadius, cam.fit * 1.8);
+  }
+  window.addEventListener('resize', onResize);
+
+  // ---------------------------------------------------------------------------
+  // Hauptschleife
+  // ---------------------------------------------------------------------------
+  const clock = new THREE.Clock();
+  let time = 0;
+
+  function frame() {
+    const dt = Math.min(clock.getDelta(), 0.05);
+    time += dt;
+
+    tickRunner(dt);
+    for (let i = effects.length - 1; i >= 0; i--) {
+      if (!effects[i].update(dt)) effects.splice(i, 1);
+    }
+
+    // Kern des KI-Modells: ruhiges Glimmen, beim Denken kräftiges Pulsieren
+    W.thinking = Math.max(0, W.thinking - dt);
+    const thinkAmt = W.thinking > 0 ? Math.min(1, W.thinking * 3) : 0;
+    W.thinkSmooth = (W.thinkSmooth || 0) + (thinkAmt - (W.thinkSmooth || 0)) * Math.min(1, dt * 6);
+    const ts = W.thinkSmooth;
+    const pulse = 0.5 + 0.5 * Math.sin(time * (2 + ts * 9));
+    core.rotation.y += dt * (0.4 + ts * 3);
+    core.rotation.x += dt * (0.2 + ts * 1.5);
+    core.scale.setScalar(1 + pulse * (0.04 + ts * 0.16));
+    coreMat.emissiveIntensity = 0.6 + pulse * 0.3 + ts * 0.8;
+    coreGlow.material.opacity = 0.35 + pulse * 0.15 + ts * 0.5;
+    coreGlow.scale.setScalar(3 + ts * 1.6 + pulse * ts * 0.8);
+    coreLight.intensity = 0.8 + ts * 2 + pulse * 0.4;
+    coreRing.rotation.x = time * (0.6 + ts * 2.5);
+    coreRing.rotation.y = time * (0.4 + ts * 1.5);
+    coreRing.material.opacity = 0.3 + ts * 0.6;
+
+    // Cloud-Rechner ein- oder ausgrauen, Projekt-Kopie einblenden
+    W.cloudDim += (W.cloudDimTarget - W.cloudDim) * Math.min(1, dt * 4);
+    applyCloudDim(W.cloudDim);
+    W.cloudFolderScale += (W.cloudFolderTarget - W.cloudFolderScale) * Math.min(1, dt * 6);
+    cloudFolder.group.scale.setScalar(Math.max(0.001, W.cloudFolderScale));
+    cloudFolder.group.visible = W.cloudFolderScale > 0.01;
+    lock.rotation.y = Math.sin(time * 0.8) * 0.25;
+
+    updatePaths(dt);
+    updateCamera(dt);
+    renderer.render(scene, camera);
+    updateLabels();
+    requestAnimationFrame(frame);
+  }
+
+  setMode('local');
+  resetView();
+  cam.theta = cam.tTheta; cam.phi = cam.tPhi; cam.radius = cam.tRadius;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
